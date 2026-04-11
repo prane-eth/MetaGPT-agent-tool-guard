@@ -5,9 +5,9 @@ import json
 import re
 import traceback
 from datetime import datetime
-from typing import Annotated, Callable, Literal, Optional, Tuple
+from typing import Annotated, Any, Callable, Literal, Optional, Tuple
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from metagpt.actions import Action, UserRequirement
 from metagpt.actions.di.run_command import RunCommand
@@ -49,6 +49,10 @@ from metagpt.utils.role_zero_utils import (
     parse_editor_result,
     parse_images,
 )
+
+
+ToolInputGuardrail = Callable[[dict, str], bool]
+ToolOutputGuardrail = Callable[[dict, Any, str], bool]
 
 
 @register_tool(include_functions=["ask_human", "reply_to_human"])
@@ -98,6 +102,31 @@ class RoleZero(Role):
     use_fixed_sop: bool = False
     respond_language: str = ""  # Language for responding humans and publishing messages.
     use_summary: bool = True  # whether to summarize at the end
+    # Guardrail hooks for tool execution.
+    tool_input_guardrails: Optional[list[ToolInputGuardrail]] = None
+    tool_output_guardrails: Optional[list[ToolOutputGuardrail]] = None
+
+    @field_validator("tool_input_guardrails", mode="before")
+    @classmethod
+    def validate_tool_input_guardrails(cls, value):
+        if value is None:
+            return None
+        if callable(value):
+            return [value]
+        if isinstance(value, list) and all(callable(guardrail) for guardrail in value):
+            return value
+        raise TypeError("tool_input_guardrails must be a callable or a list of callables")
+
+    @field_validator("tool_output_guardrails", mode="before")
+    @classmethod
+    def validate_tool_output_guardrails(cls, value):
+        if value is None:
+            return None
+        if callable(value):
+            return [value]
+        if isinstance(value, list) and all(callable(guardrail) for guardrail in value):
+            return value
+        raise TypeError("tool_output_guardrails must be a callable or a list of callables")
 
     @model_validator(mode="after")
     def set_plan_and_tool(self) -> "RoleZero":
@@ -386,9 +415,16 @@ class RoleZero(Role):
         outputs = []
         for cmd in commands:
             output = f"Command {cmd['command_name']} executed"
+            if not self._is_tool_input_allowed(cmd):
+                outputs.append(f"{output}: blocked by tool input guardrails.")
+                continue
+
             # handle special command first
             if self._is_special_command(cmd):
                 special_command_output = await self._run_special_command(cmd)
+                if not self._is_tool_output_allowed(cmd, special_command_output):
+                    outputs.append(f"{output}: output blocked by tool output guardrails.")
+                    continue
                 outputs.append(output + ":" + special_command_output)
                 continue
             # run command as specified by tool_execute_map
@@ -399,6 +435,9 @@ class RoleZero(Role):
                         tool_output = await tool_obj(**cmd["args"])
                     else:
                         tool_output = tool_obj(**cmd["args"])
+                    if not self._is_tool_output_allowed(cmd, tool_output):
+                        outputs.append(f"{output}: output blocked by tool output guardrails.")
+                        continue
                     if tool_output:
                         output += f": {str(tool_output)}"
                     outputs.append(output)
@@ -413,6 +452,32 @@ class RoleZero(Role):
         outputs = "\n\n".join(outputs)
 
         return outputs
+
+    def _is_tool_input_allowed(self, tool_call_data: dict) -> bool:
+        if not self.tool_input_guardrails:
+            return True
+        for guardrail in self.tool_input_guardrails:
+            try:
+                if not guardrail(tool_call_data, self.name):
+                    logger.warning(f"Tool input blocked by guardrail for {tool_call_data.get('command_name')}")
+                    return False
+            except Exception:
+                logger.exception("Tool input guardrail failed; blocking command by default")
+                return False
+        return True
+
+    def _is_tool_output_allowed(self, tool_call_data: dict, tool_output: Any) -> bool:
+        if not self.tool_output_guardrails:
+            return True
+        for guardrail in self.tool_output_guardrails:
+            try:
+                if not guardrail(tool_call_data, tool_output, self.name):
+                    logger.warning(f"Tool output blocked by guardrail for {tool_call_data.get('command_name')}")
+                    return False
+            except Exception:
+                logger.exception("Tool output guardrail failed; blocking output by default")
+                return False
+        return True
 
     def _is_special_command(self, cmd) -> bool:
         return cmd["command_name"] in self.special_tool_commands

@@ -34,6 +34,36 @@ metagpt "Write a cli snake game based on pygame"
 ### Usage
 
 ```
+
+### Agent Tool Guardrails
+
+RoleZero-based agents can take optional `tool_input_guardrails` and `tool_output_guardrails` in their constructor.
+
+```python
+from metagpt.roles.di.data_analyst import DataAnalyst
+
+
+def allow_only_known_commands(tool_call_data: dict, agent_name: str) -> bool:
+	command_name = tool_call_data.get("command_name", "")
+	return command_name in {
+		"Plan.append_task",
+		"Plan.finish_current_task",
+		"DataAnalyst.write_and_exec_code",
+		"end",
+	}
+
+
+def block_large_outputs(tool_call_data: dict, tool_output, agent_name: str) -> bool:
+	return len(str(tool_output)) <= 4000
+
+
+analyst = DataAnalyst(
+	tool_input_guardrails=[allow_only_known_commands],
+	tool_output_guardrails=[block_large_outputs],
+)
+```
+
+`tool_input_guardrails` and `tool_output_guardrails` are optional and default to `None`.
  Usage: metagpt [OPTIONS] [IDEA]                                                                                                                                                                                          
                                                                                                                                                                                                                           
  Start a new project.                                                                                                                                                                                                     

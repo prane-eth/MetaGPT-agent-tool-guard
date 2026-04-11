@@ -114,6 +114,38 @@ async def main():
 asyncio.run(main())  # or await main() in a jupyter notebook setting
 ```
 
+### Agent Tool Guardrails
+
+RoleZero-based agents now support optional tool guardrails in constructor args:
+
+- `tool_input_guardrails`: optional callable or list of callables, each receives `(tool_call_data, agent_name)` and returns `True/False` to allow/block the call.
+- `tool_output_guardrails`: optional callable or list of callables, each receives `(tool_call_data, tool_output, agent_name)` and returns `True/False` to allow/block the output.
+
+```python
+from metagpt.roles.di.team_leader import TeamLeader
+
+
+def block_destructive_commands(tool_call_data: dict, agent_name: str) -> bool:
+  command_name = tool_call_data.get("command_name", "")
+  args = tool_call_data.get("args", {})
+  cmd = args.get("cmd", "") if isinstance(args, dict) else ""
+  if command_name == "Terminal.run_command" and "rm -rf" in cmd:
+    return False
+  return True
+
+
+def prevent_secret_leak(tool_call_data: dict, tool_output, agent_name: str) -> bool:
+  return "SECRET" not in str(tool_output)
+
+
+team_leader = TeamLeader(
+  tool_input_guardrails=[block_destructive_commands],
+  tool_output_guardrails=[prevent_secret_leak],
+)
+```
+
+Both guardrail args are optional and default to `None`.
+
 
 ### QuickStart & Demo Video
 - Try it on [MetaGPT Huggingface Space](https://huggingface.co/spaces/deepwisdom/MetaGPT-SoftwareCompany)
